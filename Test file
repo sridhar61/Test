@@ -1,0 +1,273 @@
+
+
+
+"""
+
+call_inpector -ap ap123456 -type tags -tool datadog
+
+"""
+
+
+import argparse
+import json
+import jsonschema
+import os
+import re
+import requests
+import sys
+import time
+import yaml
+
+from _shared_modules.get_the_secret import retrieve_secret as ret_sec
+from _shared_modules.logger import logger
+from _shared_modules.paint_the_code import paint_the_code as ptc
+
+from requests.packages.urllib3.exceptions import InsecureRequestWarning
+
+logger = logger.get_logger(__name__)
+
+requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+
+auth_url = "https://b2b-igw.efidelity.com/fidelity-prd-live/edgemicro-auth/token"
+auth_client_id = os.getenv("fidol_inspector_client_id")
+auth_client_secret = os.getenv("fidol_inspector_client_secret")
+fid_log_tracking_id = "d4ae074c-1484-4ed5-aded-c25a559ca255"
+
+script_dir = os.path.dirname(__file__)
+
+config_rel_path = "configs/SNOW_BU_2_FUNC_BU.yaml"
+config_full_path = os.path.join(script_dir, config_rel_path)
+
+# inspector_query_schema_rel_path = "configs/inspector_tags_json_query_schema.txt"
+# inspector_query_schema_full_path = os.path.join(script_dir, inspector_query_schema_rel_path)
+#
+# inspector_results_schema_rel_path = "configs/inspector_tags_json_result_schema.txt"
+# inspector_results_schema_full_path = os.path.join(script_dir, inspector_results_schema_rel_path)
+
+with open(config_full_path, mode='r') as f_snow_bu_2_func_bu:
+    snow_bu_2_func_bu = yaml.load(f_snow_bu_2_func_bu, Loader=yaml.FullLoader)
+
+class creds(object):
+    def __init__(self):
+        pass
+
+def parse_args():
+    print(f'|| main > {ptc.clrtxt.Green}parse_args{ptc.clrtxt.ResetAll}')
+    parser = argparse.ArgumentParser(description='Arguments needed for successful execution')
+    parser.add_argument('-a', '--applicationid', help='Application ID number', required=True)
+    parser.add_argument('-p', '--path_to_local_creds', default=os.getenv("fidol_secure_creds"), help='Folder where the b64 encoded username and password files are')
+    parser.add_argument('-t', '--type_of_inspection', default='tags', help='What kind of data to retrieve from inspector. Default is "tags"')
+    parser.add_argument('-v', '--vendor', default='datadog', help='Who will consume this data? Default is "datadog"')
+    parser.add_argument('-x', '--xray', help='I want to see the sausage being made', action='store_true')
+    args = parser.parse_args()
+
+    return args
+
+def set_template(type_of_inspection):
+    print(f"|| main > {ptc.clrtxt.Green}set_template{ptc.clrtxt.ResetAll}")
+    if type_of_inspection == "tags":
+        inspector_query_schema_rel_path = "configs/inspector_tags_json_query_schema.txt"
+        inspector_results_schema_rel_path = "configs/inspector_tags_json_result_schema.txt"
+    else:
+            logger.critical(f"An invalid template type has been set")
+            sys.exit()
+
+    # match type_of_inspection:
+    #     case "tags":
+    #         inspector_query_schema_rel_path = "configs/inspector_tags_json_query_schema.txt"
+    #         inspector_results_schema_rel_path = "configs/inspector_tags_json_result_schema.txt"
+    #     case _:
+    #         logger.critical(f"An invalid template type has been set")
+    #         sys.exit()
+
+    inspector_query_schema_full_path = os.path.join(script_dir, inspector_query_schema_rel_path)
+    inspector_results_schema_full_path = os.path.join(script_dir, inspector_results_schema_rel_path)
+
+    return inspector_query_schema_full_path, inspector_results_schema_full_path
+
+def call_the_inspector(applicationid, inspector_query, inspector_results, xray):
+    print(f"|| main > {ptc.clrtxt.Green}call_the_inspector{ptc.clrtxt.ResetAll}")
+    print(f"   {'.' * 24}  ☎️  the Inspector  {'.' * 24}")
+    applicationid_lower = applicationid.lower()
+
+    with open(inspector_query, mode='r') as f_inspector_query_schema:
+        inspector_json_query_schema = f_inspector_query_schema.read()
+
+    inspector_json_query_schema = inspector_json_query_schema.replace("change_this_app_id", applicationid_lower)
+
+    data = {
+        'grant_type': 'client_credentials',
+    }
+
+    proxies = {
+        'http': 'http://http.proxy.fmr.com:8000',
+        'https': 'http://http.proxy.fmr.com:8000'
+    }
+
+    inspector_auth_token = \
+    requests.post(auth_url, data=data, auth=(creds.client_key, creds.client_secret), proxies=proxies).json()["token"]
+
+    string_inspector_auth_token = f"Bearer {inspector_auth_token}"
+
+    headers = {
+        'FID-LOG-TRACKING-ID': fid_log_tracking_id,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'Authorization': str(string_inspector_auth_token),
+    }
+
+    params = {
+        'name': 'appinfo',
+    }
+
+    json_data = {
+        'query': inspector_json_query_schema,
+        'variables': {},
+    }
+
+    with open(inspector_results, mode='r') as f_inspector_results_schema:
+        inspector_json_results_schema = f_inspector_results_schema.read()
+
+    inspector_json_results_schema_json = json.loads(inspector_json_results_schema)
+
+    shake_down_count = 10
+
+    while shake_down_count > 0:
+        r_inspector_payload = requests.post('https://api.fmr.com/inspector/v1/live', params=params, headers=headers, json=json_data, verify=False, timeout=60)
+
+        if r_inspector_payload.status_code != 200:
+            print(f"🤮 " * 50)
+            print(f"Status Code: {r_inspector_payload.status_code}")
+            print(f"🤮 " * 50)
+
+        inspector_payload_json = r_inspector_payload.json()
+
+        try:
+            jsonschema.validate(instance=inspector_payload_json, schema=inspector_json_results_schema_json)
+        except jsonschema.ValidationError as ve:
+            print(f'Invalid json per schema rules: {ve}')
+            shake_down_count -= 1
+            time.sleep(2)
+            continue
+
+        if xray:
+            print(f"{'🌭' * 25}{'🌭' * 25}")
+            print(json.dumps(inspector_payload_json, indent=4))
+            print(f"Status Code: {r_inspector_payload.status_code}")
+            print(f"{'🌭' * 25}{'🌭' * 25}")
+
+        shake_down_count = 0
+
+        inspector_results = {}
+        inspector_results["APPLICATIONID"] = inspector_payload_json['data']['getApp']['appid'].upper()
+        inspector_results["APPLICATIONNAME"] = inspector_payload_json['data']['getApp']['name']
+        inspector_results["BUSINESSGROUPID"] = inspector_payload_json['data']['getApp']['business']['cost_center']['details']['business_group'].split(" - ", 1)[0]
+        inspector_results["BUSINESSGROUPNAME"] = inspector_payload_json['data']['getApp']['business']['cost_center']['details']['business_group'].split(" - ", 1)[1]
+        inspector_results["COSTCENTERID"] = inspector_payload_json['data']['getApp']['business']['cost_center']['display_value'].split("-", 1)[0]
+        inspector_results["COSTCENTERNAME"] = inspector_payload_json['data']['getApp']['business']['cost_center']['display_value'].split("-", 1)[1]
+        inspector_results["ORGANIZATION"] = inspector_payload_json['data']['getApp']['business']['cost_center']['details']['business_unit'].split(" - ", 1)[0]
+        inspector_results["ORGANIZATIONNAME"] = inspector_payload_json['data']['getApp']['business']['cost_center']['details']['business_unit'].split(" - ", 1)[1]
+        inspector_results["PRODUCTID"] = inspector_payload_json['data']['getApp']['business']['product'].upper().split(" - ", 1)[0]
+        inspector_results["PRODUCTLINEID"] = inspector_payload_json['data']['getApp']['business']['product_line'].upper().split(" - ", 1)[0]
+        inspector_results["PRODUCTLINENAME"] = inspector_payload_json['data']['getApp']['business']['product_line'].upper().split(" - ", 1)[1]
+        inspector_results["PRODUCTNAME"] = inspector_payload_json['data']['getApp']['business']['product'].upper().split(" - ", 1)[1]
+        inspector_results["TIER"] = inspector_payload_json['data']['getApp']['business']['snowdata']['criticality']
+
+
+    return inspector_results
+
+def update_bu_info(inspector_results):
+    print(f"|| main > {ptc.clrtxt.Green}update_bu_info{ptc.clrtxt.ResetAll}")
+    functional_match = False
+    for k, v in snow_bu_2_func_bu.items():
+        # print(k)
+        if k == inspector_results['ORGANIZATION'].upper():
+            # print(f"|| {ptc.clrtxt.Red}ENHANCEMENT DATA MISMATCH{ptc.clrtxt.ResetAll}{' ': <43} ||")
+            # print(f"||{' ':7}FUNCTIONAL ORGANIZATION (BU) = {ptc.clrtxt.Yellow}{v}{ptc.clrtxt.ResetAll}{' ': <28} ||")
+            # print(f"||{' ':13}INSPECTOR ORGANIZATION = {ptc.clrtxt.Yellow}{dict_output['ORGANIZATION']}{ptc.clrtxt.ResetAll}{' ': <28} ||")
+            inspector_results['BU'] = v
+            functional_match = True
+
+    if not functional_match:
+        print(
+            f"There is no match for {inspector_results['ORGANIZATION'].upper()} in the Functional Business Unit lookup.")
+        sys.exit()
+    # print(f"||{'=' * 70}||")
+
+    inspector_results_keys = list(inspector_results.keys())
+    inspector_results_keys.sort()
+    inspector_results_sorted = {i: inspector_results[i] for i in inspector_results_keys}
+
+    return inspector_results_sorted
+
+def create_tags_datadog(inspector_results_sorted):
+    print(f"|| main > {ptc.clrtxt.Green}create_tags_datadog{ptc.clrtxt.ResetAll}")
+    datadog_formatted_tags = []
+    for k, v in inspector_results_sorted.items():
+        # print(f"k={k}")
+        # print(f"v={v}")
+        # dd_tags[k.lower()] = v.lower()
+        k_formatted = k.lower()
+        v_formatted = re.sub(r'(_)\1+', r'\1', re.sub(r"[.|:|;|/|\s|\||(|)|-]", "_", v.lower()))
+        datadog_formatted_tags.append(f"{k_formatted}:{v_formatted}")
+        # datadog_formatted_tags[k.lower()] = re.sub(r'(_)\1+', r'\1', re.sub(r"[.|:|;|/|\s|\||(|)|-]", "_", v.lower()))
+
+    # print(dd_tags)
+    return datadog_formatted_tags
+
+def fidol_inspector(applicationid, type_of_inspection, path_to_local_creds, vendor, xray):
+    print(f"|| {ptc.clrtxt.Blue}EXTERNAL{ptc.clrtxt.ResetAll} > {ptc.clrtxt.Green}fidol_inspector{ptc.clrtxt.ResetAll}")
+    # print(type_of_inspection)
+    # print(path_to_local_creds)
+    creds.client_key = ret_sec.get_fidol_secret(path_to_local_creds, "inspector", "fidol_client_key")
+    creds.client_secret = ret_sec.get_fidol_secret(path_to_local_creds, "inspector", "fidol_client_secret")
+
+    inspector_query, inspector_results = set_template(type_of_inspection)
+
+    inspector_results = call_the_inspector(applicationid, inspector_query, inspector_results, xray)
+    inspector_results_sorted = update_bu_info(inspector_results)
+
+    if type_of_inspection.lower() == "tags":
+        if vendor.lower() == "datadog":
+            fidol_tags_datadog = create_tags_datadog(inspector_results_sorted)
+    # match type_of_inspection.lower():
+    #     case "tags":
+    #         match vendor.lower():
+    #             case "datadog":
+    #                 fidol_tags_datadog = create_tags_datadog(inspector_results_sorted)
+
+    # print(fidol_tags_datadog)
+    # print(inspector_results_sorted)
+    return inspector_results_sorted, fidol_tags_datadog
+
+def main():
+    args = parse_args()
+    creds.client_key = ret_sec.get_fidol_secret(args.path_to_local_creds, "inspector", "fidol_client_key")
+    creds.client_secret = ret_sec.get_fidol_secret(args.path_to_local_creds, "inspector", "fidol_client_secret")
+    # print(args.applicationid)
+    # print(args.path_to_local_creds)
+    # print(args.type_of_inspection)
+    # print(args.vendor)
+    # print(args.xray)
+    inspector_query, inspector_results = set_template(args.type_of_inspection)
+    # print(inspector_query)
+    # print(inspector_results)
+    inspector_results = call_the_inspector(args.applicationid, inspector_query, inspector_results, args.xray)
+    inspector_results_sorted = update_bu_info(inspector_results)
+    # print(inspector_results_sorted)
+
+    if args.type_of_inspection.lower() == "tags":
+        if args.vendor.lower() == "datadog":
+            fidol_tags_datadog = create_tags_datadog(inspector_results_sorted)
+    # match args.type_of_inspection.lower():
+    #     case "tags":
+    #         match args.vendor.lower():
+    #             case "datadog":
+    #                 fidol_tags_datadog = create_tags_datadog(inspector_results_sorted)
+
+    # print(fidol_tags_datadog)
+    return fidol_tags_datadog
+
+
+if __name__ == '__main__':
+    main()
