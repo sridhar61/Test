@@ -89,7 +89,7 @@ def call_the_inspector(applicationid, inspector_query, inspector_results, xray):
     print(f"|| main > {ptc.clrtxt.Green}call_the_inspector{ptc.clrtxt.ResetAll}")
     print(f"   {'.' * 24}  ☎️  the Inspector  {'.' * 24}")
     applicationid_lower = applicationid.lower()
-
+    print(f"The inspector is investigating {applicationid_lower}")
     with open(inspector_query, mode='r') as f_inspector_query_schema:
         inspector_json_query_schema = f_inspector_query_schema.read()
 
@@ -131,16 +131,26 @@ def call_the_inspector(applicationid, inspector_query, inspector_results, xray):
     inspector_json_results_schema_json = json.loads(inspector_json_results_schema)
 
     shake_down_count = 10
+    status_not_so_200 = 10
 
-    while shake_down_count > 0:
-        r_inspector_payload = requests.post('https://api.fmr.com/inspector/v1/live', params=params, headers=headers, json=json_data, verify=False, timeout=60)
+    while shake_down_count > 0 and status_not_so_200 > 0:
+        r_inspector_payload = requests.post('https://api.fmr.com/inspector/v1/live', params=params, headers=headers, json=json_data, verify=False, timeout=120)
 
         if r_inspector_payload.status_code != 200:
+            # todo - need to try / except here to redo the connection on ! 200
             print(f"🤮 " * 50)
             print(f"Status Code: {r_inspector_payload.status_code}")
+
             print(f"🤮 " * 50)
+            status_not_so_200 -= 1
+            time.sleep(2)
+            continue
 
         inspector_payload_json = r_inspector_payload.json()
+
+        print("-------------inspector payload start------------")
+        print(inspector_payload_json)
+        print("-------------inspector payload end------------")
 
         try:
             jsonschema.validate(instance=inspector_payload_json, schema=inspector_json_results_schema_json)
@@ -242,6 +252,7 @@ def fidol_inspector(applicationid, type_of_inspection, path_to_local_creds, vend
 
 def main():
     args = parse_args()
+    print(args.path_to_local_creds)
     creds.client_key = ret_sec.get_fidol_secret(args.path_to_local_creds, "inspector", "fidol_client_key")
     creds.client_secret = ret_sec.get_fidol_secret(args.path_to_local_creds, "inspector", "fidol_client_secret")
     # print(args.applicationid)
@@ -265,7 +276,7 @@ def main():
     #             case "datadog":
     #                 fidol_tags_datadog = create_tags_datadog(inspector_results_sorted)
 
-    # print(fidol_tags_datadog)
+    print(fidol_tags_datadog)
     return fidol_tags_datadog
 
 
