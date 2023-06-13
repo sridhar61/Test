@@ -1,0 +1,2 @@
+snow_query_appid_url = "https://fidelityworker.service-now.com/api/now/table/cmdb_ci_appl?sysparm_display_value=true&sysparm_exclude_reference_link=true&sysparm_query=u_number="+ app_id
+    resp = requests.get(snow_query_appid_url,headers={"User-Agent": "curl/7.61.0"}, auth = HTTPBasicAuth('srvAP143993', 'A33ess=OkNow143993') )
